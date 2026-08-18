@@ -230,6 +230,15 @@ public class AiServicesProcessor {
     private static final Set<DotName> GUARDRAIL_ANNOTATIONS = Set.of(
             TOOL_INPUT_GUARDRAIL, TOOL_INPUT_GUARDRAILS, TOOL_OUTPUT_GUARDRAIL, TOOL_OUTPUT_GUARDRAILS);
 
+    /**
+     * MicroProfile Fault Tolerance annotations that retry or re-invoke the entire AI service method.
+     * When the service registers tools, these annotations can silently re-execute tool side effects
+     * because the whole ReAct loop restarts on retry.
+     */
+    private static final Set<DotName> FAULT_TOLERANCE_RETRY_ANNOTATIONS = Set.of(
+            DotName.createSimple("org.eclipse.microprofile.faulttolerance.Retry"),
+            DotName.createSimple("org.eclipse.microprofile.faulttolerance.CircuitBreaker"));
+
     @BuildStep
     public void nativeSupport(CombinedIndexBuildItem indexBuildItem,
             List<AiServicesMethodBuildItem> aiServicesMethodBuildItems,
@@ -343,6 +352,8 @@ public class AiServicesProcessor {
                 }
 
                 checkGuardrailOnAiServiceMethod(serviceMethodInfo);
+                checkFaultToleranceWithTools(serviceMethodInfo,
+                        !tools.isEmpty() || serviceMethodInfo.hasAnnotation(TOOLBOX));
             }
         }
     }
@@ -367,6 +378,34 @@ public class AiServicesProcessor {
                     agentAiMethod.declaringClass().name(),
                     agentAiMethod.name(),
                     dotNames);
+        }
+    }
+
+    /**
+     * Check that if a fault tolerance retry/circuit-breaker annotation is present on an AI service method,
+     * and the service registers tools, a warning is logged about the risk of silently re-executing tool side effects.
+     */
+    private static void checkFaultToleranceWithTools(MethodInfo serviceMethodInfo, boolean hasTools) {
+        if (!hasTools) {
+            return;
+        }
+        List<DotName> ftAnnotations = FAULT_TOLERANCE_RETRY_ANNOTATIONS.stream()
+                .filter(serviceMethodInfo::hasAnnotation)
+                .toList();
+        if (!ftAnnotations.isEmpty()) {
+            log.warnf(
+                    "AI service method '%s#%s' is annotated with %s and the service registers tools. "
+                            +
+                            "Retrying the whole ReAct loop may silently re-execute tool side effects "
+                            +
+                            "(e.g. charges, emails, writes) that already completed in the failed attempt. "
+                            +
+                            "Consider applying fault tolerance around the ChatModel bean instead, "
+                            +
+                            "or ensure your tools are idempotent.",
+                    serviceMethodInfo.declaringClass().name(),
+                    serviceMethodInfo.name(),
+                    ftAnnotations);
         }
     }
 
